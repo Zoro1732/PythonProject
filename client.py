@@ -26,7 +26,7 @@ def send_and_recv(msg):
 
 def login():
     username = input("username: ").strip()
-    password = input("password: ").strip()
+    password = input("Password: ").strip()
     res = send_and_recv(f"LOGIN|{username}|{password}")
     if isinstance(res, str) and res.startswith("LOGIN_OK"):
         print("Login successful")
