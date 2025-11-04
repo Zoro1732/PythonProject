@@ -13,7 +13,7 @@ os.makedirs(AVATAR_FOLDER, exist_ok=True)
 
 # initial gamer table
 users = {
-    "A": {"Password": "A", "lives": 2, "avatar": None, "sword": -1, "shield": -1, "slaying_potion": -1, "healing_potion": -1, "active": False},
+    "A": {"password": "A", "lives": 2, "avatar": None, "sword": -1, "shield": -1, "slaying_potion": -1, "healing_potion": -1, "active": False},
     "B": {"password": "B", "lives": 2, "avatar": None, "sword": -1, "shield": -1, "slaying_potion": -1, "healing_potion": -1, "active": False},
     "C": {"password": "C", "lives": 2, "avatar": None, "sword": -1, "shield": -1, "slaying_potion": -1, "healing_potion": -1, "active": False},
     "D": {"password": "D", "lives": 2, "avatar": None, "sword": -1, "shield": -1, "slaying_potion": -1, "healing_potion": -1, "active": False},
