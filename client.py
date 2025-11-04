@@ -1,63 +1,131 @@
-from socket import *
-# setting the server name & port (assumed to be pre-defined)
-serverName = 'localhost'
-serverPort = 12000
-# creating the clientSocket (assumed to be "opening" it)
-clientSocket = socket(AF_INET, SOCK_DGRAM)
+# client.py
+# Simple UDP client to interact with the game server
+import base64
+import json
+import os
+from socket import socket, AF_INET, SOCK_DGRAM
 
-# while-loop that will ask the user to enter their login info, breaking out when they successfully do so
-while True:
-    # making sure to validate the user by asking for their username & password
-    username = input("\nEnter your username: ")
-    password = input("\nPassword: ")
+SERVER_HOST = "127.0.0.1"   # change to server IP if remote
+SERVER_PORT = 12000
+BUFFER = 65536
+AVATAR_DOWNLOADS = "downloaded_avatars"
+os.makedirs(AVATAR_DOWNLOADS, exist_ok=True)
 
-    # sending the username & password to the server to validate
-    clientSocket.sendto(username.encode(), (serverName, serverPort))
-    clientSocket.sendto(password.encode(), (serverName, serverPort))
+sock = socket(AF_INET, SOCK_DGRAM)
+server_addr = (SERVER_HOST, SERVER_PORT)
 
-    # -- GO INTO server.py TO TRACE -- #
+def send_and_recv(msg):
+    sock.sendto(msg.encode(), server_addr)
+    data, _ = sock.recvfrom(BUFFER)
+    text = data.decode(errors='ignore')
+    # try JSON decode
+    try:
+        return json.loads(text)
+    except:
+        return text
 
-    # receiving, decrypting, & displaying the serverLoginResponse
-    loginValidation, serverAddress = clientSocket.recvfrom(2048)
-    serverLoginResponse = loginValidation.decode()
-    print(serverLoginResponse)
+def login():
+    username = input("username: ").strip()
+    password = input("password: ").strip()
+    res = send_and_recv(f"LOGIN|{username}|{password}")
+    if isinstance(res, str) and res.startswith("LOGIN_OK"):
+        print("Login successful")
+        return username
+    else:
+        print("Login failed:", res)
+        return None
 
-    # "if the server responds with a 'SUCCESS' then break out of the loop to continue onward"
-    if "SUCCESS" in serverLoginResponse:
-        break
+def get_state(username):
+    res = send_and_recv(f"GET_STATE|{username}")
+    print("State response:", res)
 
+def upload_avatar(username):
+    path = input("path to jpg to upload: ").strip()
+    if not os.path.exists(path):
+        print("file not found")
+        return
+    with open(path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+    res = send_and_recv(f"UPLOAD_AVATAR|{username}|{b64}")
+    print("Upload result:", res)
 
-# asking the user to enter their stat values, where all 10 points must be used
-# printing user instructions
-print("You are gamer. You have 10 stat points to put into the following attributes:\n")
-print("An attribute can only have a max value of 3 and all 10 stat points must be used in order to continue.\n")
+def download_avatar():
+    target = input("download avatar of username: ").strip()
+    res = send_and_recv(f"GET_AVATAR|{target}")
+    if isinstance(res, str) and res.startswith("AVATAR|"):
+        _, uname, b64 = res.split("|", 2)
+        data = base64.b64decode(b64)
+        out = os.path.join(AVATAR_DOWNLOADS, f"{uname}.jpg")
+        with open(out, "wb") as f:
+            f.write(data)
+        print("Saved avatar to", out)
+    else:
+        print("Avatar not found or error:", res)
 
-# "get" messages for each attribute
-getStrengthM = input("\nStrength: ")
-getShieldM = input("\nShield: ")
-getSlayingM = input("\nSlaying Potion: ")
-getHealingM = input("\nHealing Potion: ")
+def assign_strengths(username):
+    print("Enter 4 integers in [0..3] for sword, shield, slaying_potion, healing_potion summing to 10.")
+    s = input("sword shield slaying healing (space separated): ").strip().split()
+    if len(s) != 4:
+        print("need 4 numbers")
+        return
+    res = send_and_recv(f"ASSIGN|{username}|{s[0]}|{s[1]}|{s[2]}|{s[3]}")
+    print("Assign result:", res)
 
-# trying to convert the above stats to integers, making exceptions for any non-integer values
-try:
-    strengthValue = int(getStrengthM)
-    shieldValue = int(getShieldM)
-    slayingPotionValue = int(getSlayingM)
-    healingPotionValue = int(getHealingM)
+def list_active(username):
+    res = send_and_recv(f"LIST_ACTIVE|{username}")
+    print("Active users:", res)
 
-except ValueError:
-    # printing errors & closing the program (might need to change)
-    print("ERROR: Non-integer values detected.")
-    clientSocket.close()
-    exit()
+def get_fights():
+    res = send_and_recv("GET_FIGHTS")
+    print("Confirmed fights (structured):")
+    print(json.dumps(res, indent=2))
 
+def fight(username):
+    boss = input("who do you want to fight (username): ").strip()
+    item = input("which item (sword/slaying_potion) type exactly 'sword' or 'slaying_potion': ").strip()
+    strength = input("strength to use [0..3]: ").strip()
+    # local check optional: ensure attacker has enough strength? server also checks
+    res = send_and_recv(f"FIGHT|{username}|{boss}|{item}|{strength}")
+    print("Fight response:", res)
 
-# sending the messages into the server to assign them...?
-clientSocket.sendto(getStrengthM.encode(),(serverName, serverPort))
-clientSocket.sendto(getShieldM.encode(),(serverName, serverPort))
-clientSocket.sendto(getSlayingM.encode(),(serverName, serverPort))
-clientSocket.sendto(getHealingM.encode(),(serverName, serverPort))
+def get_active_info():
+    res = send_and_recv("GET_ACTIVE_INFO")
+    print("Active gamers full info:")
+    print(json.dumps(res, indent=2))
 
-modifiedMessage, serverAddress = clientSocket.recvfrom(2048)
-print (modifiedMessage.decode())
-clientSocket.close()
+def main():
+    print("Welcome to simple RPG client")
+    username = None
+    while not username:
+        username = login()
+    # get initial state
+    get_state(username)
+
+    while True:
+        print("\ncommands: upload_avatar, download_avatar, assign, list_active, get_fights, fight, get_active_info, state, quit")
+        cmd = input("> ").strip().lower()
+        if cmd == "upload_avatar":
+            upload_avatar(username)
+        elif cmd == "download_avatar":
+            download_avatar()
+        elif cmd == "assign":
+            assign_strengths(username)
+        elif cmd == "list_active":
+            list_active(username)
+        elif cmd == "get_fights":
+            get_fights()
+        elif cmd == "fight":
+            fight(username)
+        elif cmd == "get_active_info":
+            get_active_info()
+        elif cmd == "state":
+            get_state(username)
+        elif cmd == "quit":
+            res = send_and_recv(f"QUIT|{username}")
+            print("Quit:", res)
+            break
+        else:
+            print("unknown command")
+
+if __name__ == "__main__":
+    main()
