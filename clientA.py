@@ -1,6 +1,6 @@
 # client_gui.py
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 import base64
 import json
 import os
@@ -16,13 +16,17 @@ sock = socket(AF_INET, SOCK_DGRAM)
 server_addr = (SERVER_HOST, SERVER_PORT)
 
 def send_and_recv(msg):
-    sock.sendto(msg.encode(), server_addr)
-    data, _ = sock.recvfrom(BUFFER)
-    text = data.decode(errors='ignore')
+    # send a UDP message and wait for single reply
     try:
-        return json.loads(text)
-    except:
-        return text
+        sock.sendto(msg.encode(), server_addr)
+        data, _ = sock.recvfrom(BUFFER)
+        text = data.decode(errors='ignore')
+        try:
+            return json.loads(text)
+        except:
+            return text
+    except Exception as e:
+        return f"ERROR_COMM|{e}"
 
 # ---------------- UI Class ---------------- #
 class RPGClientApp(tk.Tk):
@@ -57,7 +61,6 @@ class RPGClientApp(tk.Tk):
         output_widget.see(tk.END)
         return res
 
-
 # ---------------- Login Frame ---------------- #
 class LoginFrame(ttk.Frame):
     def __init__(self, parent, app):
@@ -81,14 +84,52 @@ class LoginFrame(ttk.Frame):
         if not username or not password:
             messagebox.showwarning("Input Error", "Please enter both username and password.")
             return
-        res = send_and_recv(f"LOGIN|{username}|{password}")
-        if isinstance(res, str) and res.startswith("LOGIN_OK"):
-            self.app.username = username
-            messagebox.showinfo("Success", f"Welcome, {username}!")
-            self.app.show_frame("MainMenuFrame")
-        else:
-            messagebox.showerror("Login Failed", f"Server response: {res}")
 
+        res = send_and_recv(f"LOGIN|{username}|{password}")
+        # server may respond with "LOGIN_OK" and also send a JSON state (server may send state separately)
+        # we handle the expected responses:
+        if isinstance(res, str):
+            if res.startswith("LOGIN_OK"):
+                # login success: set username, then explicitly request GET_STATE to ensure we have a state
+                self.app.username = username
+                messagebox.showinfo("Success", f"Welcome, {username}!")
+                # move to main menu
+                self.app.show_frame("MainMenuFrame")
+                main_frame = self.app.frames["MainMenuFrame"]
+                # fetch and display state automatically
+                state_res = main_frame.get_state(auto=True)
+                # if state indicates sword unassigned, prompt assignment
+                if isinstance(state_res, dict) and "state" in state_res:
+                    s = state_res["state"]
+                    if s.get("sword") == "unassigned":
+                        # prompt to assign strengths now
+                        if messagebox.askyesno("Assign Strengths", "You are given 10 strengths. Do you want to assign now?"):
+                            main_frame.assign_strengths(auto=True)
+                        else:
+                            # optionally ask about upload avatar
+                            if messagebox.askyesno("Upload Avatar", "Do you want to upload an avatar now?"):
+                                main_frame.upload_avatar()
+                    else:
+                        # sword already assigned: ask about avatar upload
+                        if messagebox.askyesno("Upload Avatar", "Do you want to upload an avatar now?"):
+                            main_frame.upload_avatar()
+                return
+            elif res.startswith("LOGIN_FAIL|game_over"):
+                messagebox.showerror("Game Over", "Your account has 0 lives. Game over. You cannot log in.")
+                return
+            elif res.startswith("LOGIN_FAIL"):
+                # login failed: show retry/quit menu
+                retry = messagebox.askretrycancel("Login Failed", f"Login failed: {res}\n\nRetry?")
+                if not retry:
+                    self.app.destroy()
+                return
+            else:
+                # unknown string response
+                messagebox.showerror("Login Error", f"Server response: {res}")
+                return
+        else:
+            # if server sent JSON instead of string (unlikely), handle it
+            messagebox.showinfo("Login", f"Server response: {res}")
 
 # ---------------- Main Menu Frame ---------------- #
 class MainMenuFrame(ttk.Frame):
@@ -118,17 +159,54 @@ class MainMenuFrame(ttk.Frame):
         self.output.pack(pady=10)
 
     # ------------- Command Functions ------------- #
-    def get_state(self):
+    def get_state(self, auto=False):
         username = self.app.username
-        self.app.send_and_display(f"GET_STATE|{username}", self.output)
+        if not username:
+            messagebox.showwarning("Not logged in", "You must log in first.")
+            return
+        res = send_and_recv(f"GET_STATE|{username}")
+        # display
+        if not auto:
+            self.app.send_and_display(f"GET_STATE|{username}", self.output)
+        else:
+            # auto: still display
+            if isinstance(res, (dict, list)):
+                self.output.insert(tk.END, f"\n> GET_STATE|{username}\n{json.dumps(res, indent=2)}\n")
+            else:
+                self.output.insert(tk.END, f"\n> GET_STATE|{username}\n{res}\n")
+            self.output.see(tk.END)
+        return res
 
-    def assign_strengths(self):
+    def assign_strengths(self, auto=False):
         username = self.app.username
+        if not username:
+            messagebox.showwarning("Not logged in", "You must log in first.")
+            return
+
+        # If auto, present sequential small dialog inputs; otherwise show the same Toplevel UI
+        if auto:
+            # sequentially ask for four ints
+            vals = []
+            props = ["sword", "shield", "slaying_potion", "healing_potion"]
+            for p in props:
+                v = simpledialog.askstring("Assign Strength", f"Enter value [0..3] for {p}:")
+                if v is None:
+                    messagebox.showinfo("Assign Cancelled", "Assignment cancelled.")
+                    return
+                vals.append(v.strip())
+            if len(vals) != 4:
+                messagebox.showerror("Error", "You must enter 4 values.")
+                return
+            msg = f"ASSIGN|{username}|{'|'.join(vals)}"
+            self.app.send_and_display(msg, self.output)
+            return
+
         top = tk.Toplevel(self)
         top.title("Assign Strengths")
         tk.Label(top, text="Enter 4 integers [0..3] summing to 10 (sword, shield, slaying, healing):").pack(pady=5)
         entry = tk.Entry(top, width=30)
         entry.pack(pady=5)
+
         def send_assign():
             vals = entry.get().split()
             if len(vals) != 4:
@@ -141,6 +219,9 @@ class MainMenuFrame(ttk.Frame):
 
     def list_active(self):
         username = self.app.username
+        if not username:
+            messagebox.showwarning("Not logged in", "You must log in first.")
+            return
         self.app.send_and_display(f"LIST_ACTIVE|{username}", self.output)
 
     def get_fights(self):
@@ -148,6 +229,9 @@ class MainMenuFrame(ttk.Frame):
 
     def fight(self):
         username = self.app.username
+        if not username:
+            messagebox.showwarning("Not logged in", "You must log in first.")
+            return
         top = tk.Toplevel(self)
         top.title("Fight Menu")
         tk.Label(top, text="Opponent username:").pack()
@@ -167,6 +251,9 @@ class MainMenuFrame(ttk.Frame):
             msg = f"FIGHT|{username}|{boss}|{item}|{s}"
             self.app.send_and_display(msg, self.output)
             top.destroy()
+            # after a fight, optionally ask to send another fight
+            if messagebox.askyesno("Fight again?", "Do you want to send another fight request?"):
+                self.fight()
         tk.Button(top, text="Fight!", command=send_fight).pack(pady=10)
 
     def get_active_info(self):
@@ -174,16 +261,29 @@ class MainMenuFrame(ttk.Frame):
 
     def upload_avatar(self):
         username = self.app.username
+        if not username:
+            messagebox.showwarning("Not logged in", "You must log in first.")
+            return
         path = filedialog.askopenfilename(title="Select JPG", filetypes=[("JPEG files", "*.jpg;*.jpeg")])
         if not path:
             return
         with open(path, "rb") as f:
             b64 = base64.b64encode(f.read()).decode()
-        msg = f"UPLOAD_AVATAR|{username}|{b64}"
-        self.app.send_and_display(msg, self.output)
+
+        chunk_size = 4000
+        total_length = len(b64)
+        for i in range(0, len(b64), chunk_size):
+            chunk = b64[i:i + chunk_size]
+            msg = f"UPLOAD_AVATAR_CHUNK|{username}|{i}|{chunk}"
+            # silent send of chunks
+            send_and_recv(msg)
+
+        send_and_recv(f"UPLOAD_AVATAR_DONE|{username}")
+        self.output.insert(tk.END, f"\nAvatar has been uploaded ({total_length} bytes)\n")
+        self.output.see(tk.END)
 
     def download_avatar(self):
-        target = tk.simpledialog.askstring("Download Avatar", "Enter username to download:")
+        target = simpledialog.askstring("Download Avatar", "Enter username to download:")
         if not target:
             return
         res = send_and_recv(f"GET_AVATAR|{target}")
@@ -194,12 +294,16 @@ class MainMenuFrame(ttk.Frame):
             with open(out, "wb") as f:
                 f.write(data)
             messagebox.showinfo("Success", f"Saved avatar to {out}")
+            self.output.insert(tk.END, f"\nDownloaded avatar for {uname} -> {out}\n")
+            self.output.see(tk.END)
         else:
             messagebox.showerror("Error", f"Avatar not found or error: {res}")
+            self.output.insert(tk.END, f"\nGET_AVATAR|{target}\n{res}\n")
+            self.output.see(tk.END)
 
     def quit_game(self):
         username = self.app.username
-        res = send_and_recv(f"QUIT|{username}")
+        res = send_and_recv(f"QUIT|{username}" if username else "QUIT|")
         messagebox.showinfo("Quit", str(res))
         self.app.destroy()
 
